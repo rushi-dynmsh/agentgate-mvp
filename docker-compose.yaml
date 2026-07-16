@@ -1,9 +1,32 @@
+volumes:
+  pgdata: # audit data survives container recreation
+
 services:
   toy-mcp-server:
     build: ./toy-server
     container_name: toy-mcp-server
     ports:
       - "8080:8080"
+
+  # Audit database. Every authorization decision is written here; the
+  # schema in migrations/ runs automatically on first start.
+  postgres:
+    image: postgres:17-alpine
+    container_name: agentgate-postgres
+    environment:
+      POSTGRES_USER: agentgate
+      POSTGRES_PASSWORD: agentgate
+      POSTGRES_DB: agentgate
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentgate"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
 
   # Identity provider. Issues the JWTs that say which agent is acting on
   # behalf of which human. The realm (users, roles, claim mappers) is
@@ -31,6 +54,10 @@ services:
     container_name: agentgate
     environment:
       POLICY_FILE: /policies/agentgate.cedar
+      DATABASE_URL: postgres://agentgate:agentgate@postgres:5432/agentgate
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       # Policies are mounted, not baked into the image — editing the .cedar
       # file and restarting the container is the whole "deploy" story.

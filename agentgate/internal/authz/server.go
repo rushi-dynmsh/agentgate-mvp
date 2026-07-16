@@ -15,6 +15,7 @@ import (
 
 	auth_pb "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 
+	"github.com/agentgate/agentgate/internal/audit"
 	"github.com/agentgate/agentgate/internal/identity"
 	"github.com/agentgate/agentgate/internal/mcpreq"
 	"github.com/agentgate/agentgate/internal/policy"
@@ -25,10 +26,33 @@ import (
 type Server struct {
 	auth_pb.UnimplementedAuthorizationServer
 	engine *policy.Engine
+	audit  *audit.Log
 }
 
-func New(engine *policy.Engine) *Server {
-	return &Server{engine: engine}
+func New(engine *policy.Engine, auditLog *audit.Log) *Server {
+	return &Server{engine: engine, audit: auditLog}
+}
+
+// record writes the decision to the audit log before it is returned. An
+// audit failure is loud in the logs but does not block traffic — for a
+// hackathon POC availability wins; a production build would fail closed.
+func (s *Server) record(ctx context.Context, who *identity.Identity, call mcpreq.Call, decision, reason string) string {
+	e := audit.Entry{
+		Method:        call.Method,
+		Tool:          call.Tool,
+		Args:          call.Args,
+		Decision:      decision,
+		Reason:        reason,
+		PolicyVersion: s.engine.Version(),
+	}
+	if who != nil {
+		e.AgentID, e.OnBehalfOf, e.Roles = who.AgentID, who.OnBehalfOf, who.Roles
+	}
+	txID, err := s.audit.Record(ctx, e)
+	if err != nil {
+		log.Printf("AUDIT WRITE FAILED (decision=%s tool=%s): %v", decision, call.Tool, err)
+	}
+	return txID
 }
 
 func (s *Server) Check(ctx context.Context, req *auth_pb.CheckRequest) (*auth_pb.CheckResponse, error) {
@@ -54,6 +78,7 @@ func (s *Server) Check(ctx context.Context, req *auth_pb.CheckRequest) (*auth_pb
 	if call.Method != "tools/call" {
 		log.Printf("check: method=%q agent=%q on_behalf_of=%q — allow (protocol message)",
 			call.Method, who.AgentID, who.OnBehalfOf)
+		s.record(ctx, who, call, "allow", "protocol message")
 		return allow(), nil
 	}
 
@@ -61,19 +86,21 @@ func (s *Server) Check(ctx context.Context, req *auth_pb.CheckRequest) (*auth_pb
 	log.Printf("check: tool=%q args=%v agent=%q on_behalf_of=%q roles=%v → %s (%s) policy=%s",
 		call.Tool, call.Args, who.AgentID, who.OnBehalfOf, who.Roles,
 		decision, reason, s.engine.Version())
+	txID := s.record(ctx, who, call, string(decision), reason)
 
 	switch decision {
 	case policy.Allow:
 		return allow(), nil
 	case policy.NeedsApproval:
-		// Phase 3: the marker exists but parking arrives in Phase 5 —
+		// Phase 4: the marker exists but parking arrives in Phase 5 —
 		// for now an authorized-but-destructive call passes through.
-		log.Printf("check: tool=%q would be parked for approval (Phase 5)", call.Tool)
+		log.Printf("check: tool=%q would be parked for approval (tx %s)", call.Tool, txID)
 		return allow(), nil
 	default:
 		return deny(call, map[string]string{
-			"status":  "denied",
-			"message": fmt.Sprintf("policy denied %s for %s (roles %v)", call.Tool, who.OnBehalfOf, who.Roles),
+			"status":         "denied",
+			"message":        fmt.Sprintf("policy denied %s for %s (roles %v)", call.Tool, who.OnBehalfOf, who.Roles),
+			"transaction_id": txID,
 		}), nil
 	}
 }
