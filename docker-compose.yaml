@@ -29,6 +29,12 @@ services:
   agentgate:
     build: ./agentgate
     container_name: agentgate
+    environment:
+      POLICY_FILE: /policies/agentgate.cedar
+    volumes:
+      # Policies are mounted, not baked into the image — editing the .cedar
+      # file and restarting the container is the whole "deploy" story.
+      - ./policies:/policies:ro
     ports:
       - "9000:9000"
 

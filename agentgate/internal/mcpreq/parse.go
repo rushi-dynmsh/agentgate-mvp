@@ -7,6 +7,9 @@ import "encoding/json"
 
 // Call describes what the MCP client is actually asking for.
 type Call struct {
+	// JSON-RPC request id, echoed back when we synthesize an error
+	// response (nil for notifications, which have no id).
+	ID json.RawMessage
 	// JSON-RPC method, e.g. "initialize", "tools/list", "tools/call".
 	Method string
 	// Tool name and arguments — only set when Method == "tools/call".
@@ -17,7 +20,8 @@ type Call struct {
 }
 
 type jsonRPCEnvelope struct {
-	Method string `json:"method"`
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
 	Params struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
@@ -32,6 +36,7 @@ func Parse(body []byte) Call {
 	if err := json.Unmarshal(body, &env); err != nil {
 		return c
 	}
+	c.ID = env.ID
 	c.Method = env.Method
 	if env.Method == "tools/call" {
 		c.Tool = env.Params.Name
