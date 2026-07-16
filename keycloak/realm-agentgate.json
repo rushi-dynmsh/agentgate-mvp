@@ -1,0 +1,70 @@
+{
+  "realm": "agentgate",
+  "enabled": true,
+  "accessTokenLifespan": 3600,
+  "roles": {
+    "realm": [
+      { "name": "reader", "description": "May call read-only tools" },
+      { "name": "admin", "description": "May call all tools (destructive ones still need approval)" }
+    ]
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.com",
+      "firstName": "Alice",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "alice-password", "temporary": false }],
+      "realmRoles": ["admin"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.com",
+      "firstName": "Bob",
+      "lastName": "Reader",
+      "credentials": [{ "type": "password", "value": "bob-password", "temporary": false }],
+      "realmRoles": ["reader"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "agent-client",
+      "name": "AI Agent (test)",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": false,
+      "protocol": "openid-connect",
+      "protocolMappers": [
+        {
+          "name": "on-behalf-of",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "on_behalf_of",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles-flat",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

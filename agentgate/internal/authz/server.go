@@ -10,6 +10,7 @@ import (
 	rpc_status "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 
+	"github.com/agentgate/agentgate/internal/identity"
 	"github.com/agentgate/agentgate/internal/mcpreq"
 )
 
@@ -25,9 +26,16 @@ func (s *Server) Check(ctx context.Context, req *auth_pb.CheckRequest) (*auth_pb
 	httpReq := req.GetAttributes().GetRequest().GetHttp()
 	call := mcpreq.Parse([]byte(httpReq.GetBody()))
 
-	authHeader := httpReq.GetHeaders()["authorization"]
-	log.Printf("check: method=%q tool=%q args=%v path=%s auth_present=%v",
-		call.Method, call.Tool, call.Args, httpReq.GetPath(), authHeader != "")
+	// Who is calling? The gateway already verified the JWT (strict mode),
+	// so a resolution failure here means misconfiguration, not forgery.
+	who, err := identity.FromCheckRequest(req)
+	if err != nil {
+		log.Printf("check: method=%q tool=%q — identity resolution failed: %v",
+			call.Method, call.Tool, err)
+	} else {
+		log.Printf("check: method=%q tool=%q args=%v agent=%q on_behalf_of=%q roles=%v",
+			call.Method, call.Tool, call.Args, who.AgentID, who.OnBehalfOf, who.Roles)
+	}
 
 	return allow(), nil
 }

@@ -5,6 +5,25 @@ services:
     ports:
       - "8080:8080"
 
+  # Identity provider. Issues the JWTs that say which agent is acting on
+  # behalf of which human. The realm (users, roles, claim mappers) is
+  # imported from keycloak/realm-agentgate.json on first start.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    container_name: keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Tokens must carry the same issuer whether requested from the host
+      # (localhost:8081) or verified inside the docker network.
+      KC_HOSTNAME: http://localhost:8081
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8081:8080" # admin console + token endpoint on the host
+
   # The governance service — agentgateway consults it (via the gRPC
   # ext_authz protocol) before forwarding any request to a backend.
   agentgate:

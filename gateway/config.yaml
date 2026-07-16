@@ -15,6 +15,16 @@ binds:
           # Policies attach at the route level, so every backend under this
           # route is governed without repeating config per-backend.
           - policies:
+              # Validate the JWT AT THE GATEWAY (signature, expiry, issuer)
+              # against Keycloak's published signing keys (JWKS). Requests
+              # without a valid token are rejected before ext_authz runs.
+              # Validated claims are forwarded to agentgate automatically
+              # via the check request's metadata_context.
+              jwtAuth:
+                mode: strict
+                issuer: http://localhost:8081/realms/agentgate
+                jwks:
+                  url: http://keycloak:8080/realms/agentgate/protocol/openid-connect/certs
               # Ask the agentgate service (gRPC ext_authz protocol) before
               # forwarding ANY request. Body is included so agentgate can
               # see which MCP tool is being called and with what arguments.
