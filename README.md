@@ -70,8 +70,30 @@ go run . -list                    # see tools through the gateway
 go run . -tool read_record -id 1  # call a tool
 ```
 
-The gateway's built-in admin UI is at http://localhost:15000/ui — useful for
-confirming the config loaded the way you expect.
+Useful endpoints once it's running:
+
+| URL | What |
+|---|---|
+| http://localhost:3000/mcp | The governed MCP endpoint agents connect to |
+| http://localhost:8090 | AgentGate approval UI — pending destructive calls with Approve/Deny |
+| http://localhost:15000/ui | agentgateway's built-in admin UI (inspect config) |
+| http://localhost:8081 | Keycloak admin console (admin / admin) |
+
+### The approval flow, end to end
+
+1. An agent (as alice, an admin) calls `delete_record` → Cedar allows it,
+   but it's destructive, so AgentGate **parks** it and answers
+   `pending_approval` with a transaction id.
+2. A human sees it at http://localhost:8090 (and in Slack, if configured —
+   set `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_SIGNING_SECRET` in a `.env`
+   file) and clicks Approve or Deny.
+3. On Approve, AgentGate **re-runs the policy check against current state**
+   (the TOCTOU re-check — a permission revoked while the call sat parked
+   voids the approval), and only then executes the call and stores the result.
+4. Every step lands in the Postgres audit log:
+   ```bash
+   docker exec agentgate-postgres psql -U agentgate -c "SELECT * FROM audit_log ORDER BY id DESC LIMIT 5;"
+   ```
 
 ## Build phases
 

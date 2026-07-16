@@ -55,6 +55,12 @@ services:
     environment:
       POLICY_FILE: /policies/agentgate.cedar
       DATABASE_URL: postgres://agentgate:agentgate@postgres:5432/agentgate
+      TOY_MCP_URL: http://toy-mcp-server:8080/mcp
+      # Slack is optional — set these in a .env file to enable real Slack
+      # approval messages; the local approval UI on :8090 always works.
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_CHANNEL: ${SLACK_CHANNEL:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,7 +69,8 @@ services:
       # file and restarting the container is the whole "deploy" story.
       - ./policies:/policies:ro
     ports:
-      - "9000:9000"
+      - "9000:9000" # ext_authz gRPC (for the gateway)
+      - "8090:8090" # approval UI + Slack callback
 
   agentgateway:
     image: ghcr.io/agentgateway/agentgateway:latest

@@ -15,22 +15,26 @@ import (
 
 	auth_pb "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 
+	"github.com/agentgate/agentgate/internal/approval"
 	"github.com/agentgate/agentgate/internal/audit"
 	"github.com/agentgate/agentgate/internal/identity"
 	"github.com/agentgate/agentgate/internal/mcpreq"
 	"github.com/agentgate/agentgate/internal/policy"
+	"github.com/agentgate/agentgate/internal/slack"
 )
 
 // Server is the ext_authz Check handler: the single choke point every MCP
 // request passes through before it may reach a backend tool.
 type Server struct {
 	auth_pb.UnimplementedAuthorizationServer
-	engine *policy.Engine
-	audit  *audit.Log
+	engine    *policy.Engine
+	audit     *audit.Log
+	approvals *approval.Store
+	slack     *slack.Client
 }
 
-func New(engine *policy.Engine, auditLog *audit.Log) *Server {
-	return &Server{engine: engine, audit: auditLog}
+func New(engine *policy.Engine, auditLog *audit.Log, approvals *approval.Store, slackClient *slack.Client) *Server {
+	return &Server{engine: engine, audit: auditLog, approvals: approvals, slack: slackClient}
 }
 
 // record writes the decision to the audit log before it is returned. An
@@ -92,10 +96,35 @@ func (s *Server) Check(ctx context.Context, req *auth_pb.CheckRequest) (*auth_pb
 	case policy.Allow:
 		return allow(), nil
 	case policy.NeedsApproval:
-		// Phase 4: the marker exists but parking arrives in Phase 5 —
-		// for now an authorized-but-destructive call passes through.
-		log.Printf("check: tool=%q would be parked for approval (tx %s)", call.Tool, txID)
-		return allow(), nil
+		// Park the call: record it as pending, notify a human, and tell
+		// the agent it's waiting. ext_authz has no "hold" state, so the
+		// deny carries a structured pending_approval status the agent
+		// (or the human driving it) can act on.
+		if err := s.approvals.Park(ctx, approval.Pending{
+			TransactionID: txID,
+			AgentID:       who.AgentID,
+			OnBehalfOf:    who.OnBehalfOf,
+			Roles:         who.Roles,
+			Tool:          call.Tool,
+			Args:          call.Args,
+		}); err != nil {
+			log.Printf("check: parking tx=%s failed: %v — failing closed", txID, err)
+			return deny(call, map[string]string{
+				"status":  "error",
+				"message": "could not park call for approval",
+			}), nil
+		}
+		if s.slack.Enabled() {
+			if err := s.slack.PostApprovalRequest(txID, call.Tool, who.OnBehalfOf, who.AgentID, call.Args); err != nil {
+				log.Printf("check: slack notify failed for tx=%s: %v (local approval UI still works)", txID, err)
+			}
+		}
+		log.Printf("check: tool=%q parked for approval (tx %s)", call.Tool, txID)
+		return deny(call, map[string]string{
+			"status":         "pending_approval",
+			"message":        fmt.Sprintf("%s is destructive and requires human approval; transaction %s is pending", call.Tool, txID),
+			"transaction_id": txID,
+		}), nil
 	default:
 		return deny(call, map[string]string{
 			"status":         "denied",
