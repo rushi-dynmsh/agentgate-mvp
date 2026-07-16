@@ -1,0 +1,12 @@
+# Go build artifacts
+*.exe
+*.test
+*.out
+
+# Local environment / secrets — never commit real tokens
+.env
+*.local.yaml
+
+# Editor noise
+.vscode/
+.idea/

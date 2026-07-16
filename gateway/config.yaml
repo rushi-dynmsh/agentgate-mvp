@@ -1,0 +1,20 @@
+# agentgateway configuration.
+#
+# Structure (outermost to innermost):
+#   binds     — which ports the gateway listens on
+#   listeners — protocol handling on that port
+#   routes    — request matching + policies (auth rules attach here later)
+#   backends  — where matched traffic is forwarded (our toy MCP server)
+#
+# agentgateway hot-reloads this file on change — no container restart needed.
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+binds:
+  - port: 3000
+    listeners:
+      - routes:
+          - backends:
+              - mcp:
+                  targets:
+                    - name: toy-server
+                      mcp:
+                        host: http://toy-mcp-server:8080/mcp

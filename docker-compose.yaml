@@ -1,0 +1,18 @@
+services:
+  toy-mcp-server:
+    build: ./toy-server
+    container_name: toy-mcp-server
+    ports:
+      - "8080:8080"
+
+  agentgateway:
+    image: ghcr.io/agentgateway/agentgateway:latest
+    container_name: agentgateway
+    command: ["-f", "/etc/agentgateway/config.yaml"]
+    volumes:
+      - ./gateway/config.yaml:/etc/agentgateway/config.yaml:ro
+    ports:
+      - "3000:3000"   # MCP listener
+      - "15000:15000" # Admin UI
+    depends_on:
+      - toy-mcp-server
