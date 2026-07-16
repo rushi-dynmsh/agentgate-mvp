@@ -12,7 +12,19 @@ binds:
   - port: 3000
     listeners:
       - routes:
-          - backends:
+          # Policies attach at the route level, so every backend under this
+          # route is governed without repeating config per-backend.
+          - policies:
+              # Ask the agentgate service (gRPC ext_authz protocol) before
+              # forwarding ANY request. Body is included so agentgate can
+              # see which MCP tool is being called and with what arguments.
+              extAuthz:
+                host: agentgate:9000
+                protocol:
+                  grpc: {}
+                includeRequestBody:
+                  maxRequestBytes: 65536
+            backends:
               - mcp:
                   targets:
                     - name: toy-server

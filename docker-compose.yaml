@@ -5,6 +5,14 @@ services:
     ports:
       - "8080:8080"
 
+  # The governance service — agentgateway consults it (via the gRPC
+  # ext_authz protocol) before forwarding any request to a backend.
+  agentgate:
+    build: ./agentgate
+    container_name: agentgate
+    ports:
+      - "9000:9000"
+
   agentgateway:
     image: ghcr.io/agentgateway/agentgateway:latest
     container_name: agentgateway
@@ -16,3 +24,4 @@ services:
       - "15000:15000" # Admin UI
     depends_on:
       - toy-mcp-server
+      - agentgate
