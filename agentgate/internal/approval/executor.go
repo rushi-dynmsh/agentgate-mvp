@@ -56,7 +56,7 @@ func (e *Executor) Approve(ctx context.Context, txID, decidedBy string) string {
 		return e.refuse(ctx, p, decidedBy, "policy reload failed")
 	}
 	who := &identity.Identity{AgentID: p.AgentID, OnBehalfOf: p.OnBehalfOf, Roles: p.Roles}
-	decision, reason := e.engine.Decide(who, p.Tool)
+	decision, reason := e.engine.Decide(ctx, who, p.Tool, p.Args)
 	if decision == policy.Deny {
 		log.Printf("approval: TOCTOU re-check DENIED tx=%s tool=%s (%s)", txID, p.Tool, reason)
 		return e.refuse(ctx, p, decidedBy, "re-check denied: "+reason)

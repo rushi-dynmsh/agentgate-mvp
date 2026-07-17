@@ -8,6 +8,16 @@ services:
     ports:
       - "8080:8080"
 
+  # Relationship graph (Phase 6). Answers "does alice OWN record 2?" —
+  # per-record ownership, a question role-based rules can't express.
+  # agentgate writes the schema and seed relationships at startup.
+  spicedb:
+    image: authzed/spicedb:latest
+    container_name: spicedb
+    command: ["serve", "--grpc-preshared-key", "agentgate-dev-key"]
+    ports:
+      - "50051:50051" # gRPC API (zed CLI / agentgate)
+
   # Audit database. Every authorization decision is written here; the
   # schema in migrations/ runs automatically on first start.
   postgres:
@@ -61,6 +71,8 @@ services:
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
       SLACK_CHANNEL: ${SLACK_CHANNEL:-}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      SPICEDB_ENDPOINT: spicedb:50051
+      SPICEDB_TOKEN: agentgate-dev-key
     depends_on:
       postgres:
         condition: service_healthy

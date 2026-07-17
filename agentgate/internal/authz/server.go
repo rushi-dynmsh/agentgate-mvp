@@ -86,7 +86,7 @@ func (s *Server) Check(ctx context.Context, req *auth_pb.CheckRequest) (*auth_pb
 		return allow(), nil
 	}
 
-	decision, reason := s.engine.Decide(who, call.Tool)
+	decision, reason := s.engine.Decide(ctx, who, call.Tool, call.Args)
 	log.Printf("check: tool=%q args=%v agent=%q on_behalf_of=%q roles=%v → %s (%s) policy=%s",
 		call.Tool, call.Args, who.AgentID, who.OnBehalfOf, who.Roles,
 		decision, reason, s.engine.Version())

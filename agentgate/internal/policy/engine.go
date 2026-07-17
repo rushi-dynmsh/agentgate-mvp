@@ -5,6 +5,7 @@
 package policy
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -15,6 +16,13 @@ import (
 
 	"github.com/agentgate/agentgate/internal/identity"
 )
+
+// RelationChecker answers per-record ownership questions (backed by SpiceDB
+// in Phase 6). Nil means "no relationship graph configured" and the check is
+// skipped — pre-Phase-6 behavior.
+type RelationChecker interface {
+	CheckOwner(ctx context.Context, user, recordID string) (bool, error)
+}
 
 // Decision is the tri-state outcome AgentGate works with. Cedar itself only
 // answers allow/deny; NeedsApproval is our layer on top for destructive
@@ -36,6 +44,9 @@ type Engine struct {
 	// Version identifies which policy text produced a decision (for the
 	// audit log). Currently the file's SHA-256 — see Reload.
 	version string
+	// Relations, when set, adds the per-record ownership requirement on
+	// destructive record tools (Phase 6). Assign before serving traffic.
+	Relations RelationChecker
 }
 
 // destructivePrefixes classifies tools by naming convention: anything that
@@ -86,13 +97,14 @@ func (e *Engine) Version() string {
 	return e.version
 }
 
-// Decide runs the Cedar check for (who, tool) and layers the
-// needs-approval rule on top:
+// Decide runs the Cedar check for (who, tool, args) and layers two things on
+// top of Cedar's binary answer:
 //
-//	Cedar deny                        → Deny
-//	Cedar allow + read-only tool      → Allow
-//	Cedar allow + destructive tool    → NeedsApproval (park for a human)
-func (e *Engine) Decide(who *identity.Identity, tool string) (Decision, string) {
+//	Cedar deny                                    → Deny
+//	Cedar allow + destructive + not record owner  → Deny (SpiceDB, Phase 6)
+//	Cedar allow + read-only tool                  → Allow
+//	Cedar allow + destructive + owner             → NeedsApproval (park for a human)
+func (e *Engine) Decide(ctx context.Context, who *identity.Identity, tool string, args map[string]any) (Decision, string) {
 	e.mu.RLock()
 	ps := e.policies
 	e.mu.RUnlock()
@@ -142,6 +154,23 @@ func (e *Engine) Decide(who *identity.Identity, tool string) (Decision, string) 
 		return Deny, reason
 	}
 	if risk == "destructive" {
+		// Phase 6: role said yes, but does this user own THIS record?
+		// (Fail closed on graph errors — an unreachable SpiceDB must not
+		// widen access.)
+		if e.Relations != nil {
+			recordID, _ := args["id"].(string)
+			if recordID == "" {
+				return Deny, reason + " | no record id to check ownership for"
+			}
+			owns, err := e.Relations.CheckOwner(ctx, who.OnBehalfOf, recordID)
+			if err != nil {
+				return Deny, reason + " | relationship check failed: " + err.Error()
+			}
+			if !owns {
+				return Deny, reason + fmt.Sprintf(" | spicedb: %s does not own record %s", who.OnBehalfOf, recordID)
+			}
+			reason += fmt.Sprintf(" | spicedb: %s owns record %s", who.OnBehalfOf, recordID)
+		}
 		return NeedsApproval, reason
 	}
 	return Allow, reason

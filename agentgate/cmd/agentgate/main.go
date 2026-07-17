@@ -13,6 +13,7 @@ import (
 	"github.com/agentgate/agentgate/internal/audit"
 	"github.com/agentgate/agentgate/internal/authz"
 	"github.com/agentgate/agentgate/internal/policy"
+	"github.com/agentgate/agentgate/internal/relations"
 	"github.com/agentgate/agentgate/internal/slack"
 )
 
@@ -42,6 +43,20 @@ func main() {
 	}
 	log.Printf("audit log connected")
 
+	// Relationship graph (Phase 6). Optional: without SPICEDB_ENDPOINT the
+	// engine skips per-record ownership checks (pre-Phase-6 behavior).
+	var graph *relations.Client
+	if endpoint := os.Getenv("SPICEDB_ENDPOINT"); endpoint != "" {
+		graph, err = relations.Connect(context.Background(), endpoint, os.Getenv("SPICEDB_TOKEN"))
+		if err != nil {
+			log.Fatalf("spicedb: %v", err)
+		}
+		engine.Relations = graph
+		log.Printf("relationship graph connected (%s), schema written, demo edges seeded", endpoint)
+	} else {
+		log.Printf("SPICEDB_ENDPOINT not set — ownership checks disabled")
+	}
+
 	// Approval flow: pending store + executor (TOCTOU re-check + replay),
 	// human-facing HTTP server, optional Slack notifications.
 	slackClient := &slack.Client{
@@ -65,7 +80,7 @@ func main() {
 		approvalAddr = ":8090"
 	}
 	go func() {
-		if err := approval.NewHTTPServer(approvalStore, executor, slackClient).ListenAndServe(approvalAddr); err != nil {
+		if err := approval.NewHTTPServer(approvalStore, executor, slackClient, graph).ListenAndServe(approvalAddr); err != nil {
 			log.Fatalf("approval http server: %v", err)
 		}
 	}()

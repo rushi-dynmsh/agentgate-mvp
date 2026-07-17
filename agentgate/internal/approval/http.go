@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/agentgate/agentgate/internal/relations"
 	"github.com/agentgate/agentgate/internal/slack"
 )
 
@@ -26,10 +27,13 @@ type HTTPServer struct {
 	store    *Store
 	executor *Executor
 	slack    *slack.Client
+	// graph is nil when SpiceDB isn't configured; the /relations endpoints
+	// then respond 404.
+	graph *relations.Client
 }
 
-func NewHTTPServer(store *Store, executor *Executor, slackClient *slack.Client) *HTTPServer {
-	return &HTTPServer{store: store, executor: executor, slack: slackClient}
+func NewHTTPServer(store *Store, executor *Executor, slackClient *slack.Client, graph *relations.Client) *HTTPServer {
+	return &HTTPServer{store: store, executor: executor, slack: slackClient, graph: graph}
 }
 
 func (h *HTTPServer) ListenAndServe(addr string) error {
@@ -39,6 +43,10 @@ func (h *HTTPServer) ListenAndServe(addr string) error {
 	mux.HandleFunc("GET /status/{tx}", h.status)
 	mux.HandleFunc("POST /decide", h.decide)
 	mux.HandleFunc("POST /slack/interactive", h.slackInteractive)
+	// Relationship-graph admin (Phase 6 demo): view, grant, revoke edges.
+	mux.HandleFunc("GET /relations", h.relationsList)
+	mux.HandleFunc("POST /relations/grant", h.relationsWrite(true))
+	mux.HandleFunc("POST /relations/revoke", h.relationsWrite(false))
 	log.Printf("approval UI listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
 }
@@ -140,6 +148,46 @@ func (h *HTTPServer) slackInteractive(w http.ResponseWriter, r *http.Request) {
 		go slack.Respond(payload.ResponseURL, fmt.Sprintf("Transaction `%s`: %s", action.Value, outcome))
 	}
 	w.WriteHeader(200)
+}
+
+// relationsList shows every ownership edge in the graph.
+func (h *HTTPServer) relationsList(w http.ResponseWriter, r *http.Request) {
+	if h.graph == nil {
+		http.Error(w, "relationship graph not configured", 404)
+		return
+	}
+	edges, err := h.graph.List(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(edges)
+}
+
+// relationsWrite grants or revokes one user→record ownership edge.
+func (h *HTTPServer) relationsWrite(grant bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.graph == nil {
+			http.Error(w, "relationship graph not configured", 404)
+			return
+		}
+		user, record := r.FormValue("user"), r.FormValue("record")
+		if user == "" || record == "" {
+			http.Error(w, "need user and record form values", 400)
+			return
+		}
+		op, fn := "granted", h.graph.Grant
+		if !grant {
+			op, fn = "revoked", h.graph.Revoke
+		}
+		if err := fn(r.Context(), user, record); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		log.Printf("relations: %s ownership of record %s for %s", op, record, user)
+		json.NewEncoder(w).Encode(map[string]string{"outcome": fmt.Sprintf("%s: %s owns record %s = %v", op, user, record, grant)})
+	}
 }
 
 // ui renders a minimal HTML approval queue — enough to demo the whole flow
