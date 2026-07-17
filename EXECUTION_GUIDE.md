@@ -8,22 +8,34 @@ no prior knowledge assumed.
 
 ## 1. The mental model (read this first)
 
-Six things run, and every arrow below is a real network hop you can observe:
+Seven things run, and every arrow below is a real network hop you can observe:
 
 ```mermaid
 flowchart LR
     C[client CLI\nplays the AI agent] -->|"1. login (user+password)"| KC[Keycloak :8081\nidentity provider]
     C -->|"2. tool call + JWT"| GW[agentgateway :3000\nMCP proxy]
     GW -->|"3. is this allowed?"| AG[agentgate :9000\nthe governance service]
-    AG -->|"4. write decision"| PG[(Postgres :5432\naudit log)]
-    GW -->|"5. only if allowed"| TS[toy-mcp-server :8080\nthe protected tool]
-    H[you, the human] -->|approve / deny| UI[approval UI :8090\npart of agentgate]
+    AG -->|"4a. role check"| CE[Cedar policy file]
+    AG -->|"4b. owns this record?"| SP[SpiceDB :50051\nrelationship graph]
+    AG -->|"5. write decision"| PG[(Postgres :5432\naudit log)]
+    GW -->|"6. only if allowed"| TS[toy-mcp-server :8080\nthe protected tool]
+    H[you, the human] -->|approve / deny| UI[approval UI + dashboard :8090\npart of agentgate]
 ```
 
 The one-sentence version: **the agent can only reach tools through the
 gateway, the gateway asks agentgate before forwarding anything, and agentgate
-decides using your identity (from Keycloak) + the Cedar policy file — logging
-everything to Postgres and parking destructive calls for human approval.**
+decides using your identity (from Keycloak) + the Cedar policy file + the
+SpiceDB ownership graph — logging everything to Postgres and parking
+destructive calls for human approval.**
+
+The two "may they?" layers, and why there are two:
+
+- **Cedar (roles)** answers *category* questions — "may readers call read
+  tools?" One rule covers every record at once.
+- **SpiceDB (relationships)** answers *specific-object* questions — "does
+  alice own record 2?" Roles can't express this; you'd need a rule per
+  record. A destructive call must pass **both**: the role must permit the
+  tool, **and** the user must own that exact record.
 
 ### What each directory contains
 
@@ -31,7 +43,8 @@ everything to Postgres and parking destructive calls for human approval.**
 |---|---|---|
 | `docker-compose.yaml` | Defines all six containers | adding services, changing env vars |
 | `gateway/config.yaml` | agentgateway's config (routes, JWT validation, ext_authz) | changing how the gateway behaves |
-| `policies/agentgate.cedar` | The authorization rules | changing who may do what |
+| `policies/agentgate.cedar` | The role-based authorization rules | changing who may do what |
+| `agentgate/internal/relations/` | SpiceDB schema + ownership checks | changing what "ownership" means |
 | `agentgate/` | The Go governance service | changing decision/approval logic |
 | `toy-server/` | The fake tool being protected | adding demo tools |
 | `client/` | CLI that plays the agent | running test calls |
@@ -68,9 +81,10 @@ docker compose ps
 |---|---|
 | `toy-mcp-server` | immediately |
 | `agentgateway` | immediately (log line: `started bind bind="bind/3000"`) |
-| `agentgate` | logs show `audit log connected` + `listening on :9000` |
+| `agentgate` | logs show `audit log connected` + `relationship graph connected` + `listening on :9000` |
 | `keycloak` | takes ~30–60s; ready when http://localhost:8081 loads |
 | `agentgate-postgres` | healthcheck turns `healthy` |
+| `spicedb` | immediately; agentgate writes its schema + seeds edges on connect |
 
 Quick smoke test (should list two tools):
 
@@ -95,6 +109,9 @@ Notes on what resets when:
 - **Keycloak realm** is re-imported from JSON on a fresh container, so
   users/roles always come back; changes you click together in the admin
   console are lost on `down` (edit the JSON if you want them permanent).
+- **SpiceDB runs in memory** (dev mode) → the ownership graph resets on any
+  SpiceDB restart, and agentgate re-seeds the demo edges (alice owns 1 and 2)
+  when it reconnects.
 
 ---
 
@@ -103,6 +120,7 @@ Notes on what resets when:
 | URL | What | Login |
 |---|---|---|
 | http://localhost:8090 | **Approval UI** — pending destructive calls, Approve/Deny buttons | none |
+| http://localhost:8090/dashboard | **Dashboard** — live audit log, pending queue, ownership graph (read-only) | none |
 | http://localhost:15000/ui | agentgateway admin UI — see the loaded routes/policies | none |
 | http://localhost:8081 | Keycloak admin console — users, roles, tokens | `admin` / `admin` |
 | http://localhost:3000/mcp | The governed MCP endpoint (agents connect here) | JWT required |
@@ -174,6 +192,23 @@ docker exec agentgate-postgres psql -U agentgate -c "SELECT method, decision, re
 # Pending approvals table:
 docker exec agentgate-postgres psql -U agentgate -c "SELECT transaction_id, on_behalf_of, tool, state, decided_by, result FROM pending_approvals ORDER BY id DESC LIMIT 10;"
 ```
+
+## 8b. Managing the ownership graph (Phase 6)
+
+Ownership lives in SpiceDB, not Postgres. Manage it through agentgate's HTTP
+API (no restart needed — changes are instant):
+
+```powershell
+curl.exe -s http://localhost:8090/relations                          # list all owner edges
+curl.exe -s -X POST http://localhost:8090/relations/grant  -d "user=alice&record=3"   # alice now owns record 3
+curl.exe -s -X POST http://localhost:8090/relations/revoke -d "user=bob&record=1"      # bob no longer owns record 1
+```
+
+Seed state (written by agentgate at startup): **alice owns records 1 and 2**.
+The seed only runs on connect, so to reset the graph to seed state either
+restart agentgate (`docker compose restart agentgate`) or grant/revoke by
+hand. Rule of thumb: a destructive call needs the role (Cedar) **and**
+ownership of that specific record (SpiceDB) — miss either and it's denied.
 
 ## 9. Making changes
 
@@ -248,3 +283,6 @@ happen in the local UI.
 | `go test` fails with "Application Control policy has blocked this file" | Windows blocks freshly-built unsigned test exes | run tests in Docker: `docker run --rm -v "${PWD}:/repo" -w /repo/agentgate -e GOFLAGS=-buildvcs=false golang:1.26-alpine go test ./...` |
 | Keycloak container exits at startup | Port 8081 taken, or corrupted state | free the port / `docker compose up -d --force-recreate keycloak` |
 | Postgres has no tables | Volume predates the migrations | `docker compose down -v && docker compose up -d` (wipes audit data) |
+| Admin's delete denied unexpectedly | They don't own that record in SpiceDB | grant it: `curl.exe -X POST localhost:8090/relations/grant -d "user=alice&record=N"`, or check `/relations` |
+| agentgate log: `spicedb not ready` on boot | SpiceDB still starting | harmless — it retries for ~30s; only fatal if it never connects |
+| Ownership panel missing from dashboard | `SPICEDB_ENDPOINT` unset | it's set in compose by default; if you removed it, ownership checks are simply disabled |

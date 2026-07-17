@@ -180,6 +180,13 @@ the database serializes racing humans.
 
 ---
 
+> **Heads up for Level 3 onward:** since Phase 6, a destructive call also
+> requires that the user **owns the record**. The seed grants **alice
+> ownership of records 1 and 2** (not 3). So alice deleting record 1 or 2
+> parks for approval; alice deleting record 3 is denied outright by the
+> ownership graph. Level 8 explores this directly — if a delete you expect to
+> park gets denied instead, check ownership at http://localhost:8090/relations.
+
 ## Level 4 — TOCTOU: the flagship security demo
 
 *Time-of-check-to-time-of-use: what if permissions change while a call sits
@@ -351,6 +358,109 @@ to "what did the agent do while I wasn't looking?" is a query, not a guess.
 
 ---
 
+---
+
+## Level 8 — The ownership graph (SpiceDB, Phase 6)
+
+*Roles say "may admins delete records?". Ownership says "does alice own
+**this** record?". A destructive call must pass both.*
+
+### 8.1 See the ownership edges
+
+```powershell
+curl.exe -s http://localhost:8090/relations
+```
+
+**Expect:** `alice` owns records `1` and `2` (the seed). Nobody owns `3`.
+
+### 8.2 Admin, but not the owner
+
+```powershell
+go run . -tool delete_record -id 3 -user alice
+```
+
+**Expect:** denied — `policy denied delete_record for alice (roles [admin])`.
+**Why:** Cedar allowed it (alice is admin), but SpiceDB says she doesn't own
+record 3. Check the audit reason — it spells out both halves:
+
+```powershell
+docker exec agentgate-postgres psql -U agentgate -t -c "SELECT reason FROM audit_log WHERE method='tools/call' ORDER BY id DESC LIMIT 1;"
+# → cedar=allow risk=destructive roles=[admin] | spicedb: alice does not own record 3
+```
+
+### 8.3 Grant ownership → the same call now parks
+
+```powershell
+curl.exe -s -X POST http://localhost:8090/relations/grant -d "user=alice&record=3"
+go run . -tool delete_record -id 3 -user alice
+```
+
+**Expect:** now it **parks** for approval instead of denying. One relationship
+tuple flipped the outcome — no policy change, no restart.
+
+### 8.4 Revoke → it flips back to denied
+
+```powershell
+curl.exe -s -X POST http://localhost:8090/relations/revoke -d "user=alice&record=3"
+go run . -tool delete_record -id 3 -user alice
+```
+
+**Expect:** denied again. This is the Phase 6 confirm gate: revoking a tuple
+changes the authorization outcome for a previously-succeeding call.
+
+### 8.5 TOCTOU via the graph (the strongest demo)
+
+Combine parking with a mid-flight ownership change:
+
+1. Confirm alice owns record 2 (`/relations`), then park a delete:
+   ```powershell
+   go run . -tool delete_record -id 2 -user alice
+   ```
+   (copy the transaction id from the message)
+2. **Before approving**, revoke her ownership:
+   ```powershell
+   curl.exe -s -X POST http://localhost:8090/relations/revoke -d "user=alice&record=2"
+   ```
+3. Approve at http://localhost:8090 (or via the API).
+
+**Expect:** `approval voided: re-check denied: … | spicedb: alice does not
+own record 2`. The human said yes; the system still refused, because at
+execution time the *relationship* no longer held. Restore with a grant when
+you're done.
+
+---
+
+## Level 9 — The dashboard (Phase 7)
+
+### 9.1 Watch it live
+
+Open **http://localhost:8090/dashboard** and leave it up while you run
+scenarios from any level. Three panels refresh every 3 seconds:
+
+- **Pending approvals** — the queue, amber
+- **Ownership graph** — current SpiceDB edges (auto-hidden if SpiceDB is off)
+- **Audit log** — every decision, colour-coded (green allow, red deny, amber
+  pending)
+
+**Try:** run 8.2 (a denied delete) and 8.3 (a park) with the dashboard open —
+watch the rows appear in real time, and the ownership panel change when you
+grant.
+
+### 9.2 It's read-only by design
+
+There are no Approve/Deny buttons on the dashboard. **Why:** the dashboard is
+for visibility; the *write* paths (approve/deny) stay on the approval UI (`/`)
+and Slack, so "looking" and "deciding" are separate surfaces. The data behind
+each panel is plain JSON you can hit directly:
+
+```powershell
+curl.exe -s "http://localhost:8090/audit?limit=5"
+curl.exe -s http://localhost:8090/pending
+curl.exe -s http://localhost:8090/relations
+```
+
+---
+
 ## Scenario checklist
 
 Tick these off and you've exercised the entire platform:
@@ -362,3 +472,5 @@ Tick these off and you've exercised the entire platform:
 - [ ] 5.1 revoke readers · 5.2 readers + approval · 5.3 forbid one user · 5.4 broken policy fails closed · 5.5 policy tests
 - [ ] 6.1 role-less user denied · 6.2 live promotion · 6.3 decode a token
 - [ ] 7.1 raw curl MCP · 7.2 the bypass lesson · 7.3 gateway UI · 7.4 forensics query
+- [ ] 8.1 view edges · 8.2 admin-not-owner denied · 8.3 grant→parks · 8.4 revoke→denied · 8.5 TOCTOU via graph
+- [ ] 9.1 dashboard live · 9.2 read-only JSON endpoints
