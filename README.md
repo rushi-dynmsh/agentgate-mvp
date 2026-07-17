@@ -76,6 +76,7 @@ Useful endpoints once it's running:
 |---|---|
 | http://localhost:3000/mcp | The governed MCP endpoint agents connect to |
 | http://localhost:8090 | AgentGate approval UI — pending destructive calls with Approve/Deny |
+| http://localhost:8090/dashboard | Read-only dashboard — live audit log, pending queue, ownership graph |
 | http://localhost:15000/ui | agentgateway's built-in admin UI (inspect config) |
 | http://localhost:8081 | Keycloak admin console (admin / admin) |
 
@@ -107,4 +108,5 @@ each with a confirm gate, each its own git commit:
 - **Phase 3** — real decisions: Cedar policies (reader/admin roles)
 - **Phase 4** — audit log in Postgres
 - **Phase 5** — async human approval (Slack) with TOCTOU re-check
-- **Phase 6/7** — stretch: SpiceDB relationship graph, dashboard
+- **Phase 6** — relationship graph: SpiceDB per-record ownership under the Cedar role check
+- **Phase 7** — read-only dashboard: live audit log, pending queue, ownership graph

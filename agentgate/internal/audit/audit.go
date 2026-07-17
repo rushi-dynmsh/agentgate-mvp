@@ -74,3 +74,49 @@ func (l *Log) Record(ctx context.Context, e Entry) (string, error) {
 // Pool exposes the underlying connection pool for other packages that share
 // the database (the pending-approvals store in Phase 5).
 func (l *Log) Pool() *pgxpool.Pool { return l.pool }
+
+// Row is one audit-log record as read back for the dashboard (Phase 7).
+type Row struct {
+	ID            int64          `json:"id"`
+	TransactionID string         `json:"transaction_id"`
+	AgentID       string         `json:"agent_id"`
+	OnBehalfOf    string         `json:"on_behalf_of"`
+	Roles        []string        `json:"roles"`
+	Method        string         `json:"method"`
+	Tool          string         `json:"tool"`
+	Args          map[string]any `json:"args"`
+	Decision      string         `json:"decision"`
+	Reason        string         `json:"reason"`
+	PolicyVersion string         `json:"policy_version"`
+	CreatedAt     time.Time      `json:"created_at"`
+}
+
+// Recent returns the newest audit rows, most recent first. limit is clamped
+// to a sane range so a dashboard poll can't ask for the whole table.
+func (l *Log) Recent(ctx context.Context, limit int) ([]Row, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := l.pool.Query(ctx, `
+		SELECT id, transaction_id, agent_id, on_behalf_of, roles, method,
+		       COALESCE(tool,''), args, decision, COALESCE(reason,''),
+		       COALESCE(policy_version,''), created_at
+		FROM audit_log ORDER BY id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Row
+	for rows.Next() {
+		var r Row
+		var argsJSON []byte
+		if err := rows.Scan(&r.ID, &r.TransactionID, &r.AgentID, &r.OnBehalfOf,
+			&r.Roles, &r.Method, &r.Tool, &argsJSON, &r.Decision, &r.Reason,
+			&r.PolicyVersion, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(argsJSON, &r.Args)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

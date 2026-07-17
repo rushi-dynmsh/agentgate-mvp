@@ -80,7 +80,7 @@ func main() {
 		approvalAddr = ":8090"
 	}
 	go func() {
-		if err := approval.NewHTTPServer(approvalStore, executor, slackClient, graph).ListenAndServe(approvalAddr); err != nil {
+		if err := approval.NewHTTPServer(approvalStore, executor, slackClient, auditLog, graph).ListenAndServe(approvalAddr); err != nil {
 			log.Fatalf("approval http server: %v", err)
 		}
 	}()

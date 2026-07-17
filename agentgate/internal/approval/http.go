@@ -8,7 +8,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 
+	"github.com/agentgate/agentgate/internal/audit"
 	"github.com/agentgate/agentgate/internal/relations"
 	"github.com/agentgate/agentgate/internal/slack"
 )
@@ -16,6 +18,8 @@ import (
 // HTTPServer exposes the human-facing side of the approval flow:
 //
 //	GET  /                  — tiny approval UI (list pending, Approve/Deny)
+//	GET  /dashboard         — read-only dashboard (audit + pending + graph)
+//	GET  /audit             — recent audit rows as JSON
 //	GET  /pending           — pending calls as JSON
 //	GET  /status/{txID}     — state/result of one transaction as JSON
 //	POST /decide            — local approver path (form: transaction_id, decision)
@@ -27,18 +31,21 @@ type HTTPServer struct {
 	store    *Store
 	executor *Executor
 	slack    *slack.Client
+	audit    *audit.Log
 	// graph is nil when SpiceDB isn't configured; the /relations endpoints
 	// then respond 404.
 	graph *relations.Client
 }
 
-func NewHTTPServer(store *Store, executor *Executor, slackClient *slack.Client, graph *relations.Client) *HTTPServer {
-	return &HTTPServer{store: store, executor: executor, slack: slackClient, graph: graph}
+func NewHTTPServer(store *Store, executor *Executor, slackClient *slack.Client, auditLog *audit.Log, graph *relations.Client) *HTTPServer {
+	return &HTTPServer{store: store, executor: executor, slack: slackClient, audit: auditLog, graph: graph}
 }
 
 func (h *HTTPServer) ListenAndServe(addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", h.ui)
+	mux.HandleFunc("GET /dashboard", h.dashboard)
+	mux.HandleFunc("GET /audit", h.auditJSON)
 	mux.HandleFunc("GET /pending", h.pendingJSON)
 	mux.HandleFunc("GET /status/{tx}", h.status)
 	mux.HandleFunc("POST /decide", h.decide)
@@ -49,6 +56,18 @@ func (h *HTTPServer) ListenAndServe(addr string) error {
 	mux.HandleFunc("POST /relations/revoke", h.relationsWrite(false))
 	log.Printf("approval UI listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+// auditJSON returns recent audit rows (read-only). ?limit=N (default 100).
+func (h *HTTPServer) auditJSON(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	rows, err := h.audit.Recent(r.Context(), limit)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rows)
 }
 
 func (h *HTTPServer) pendingJSON(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +222,8 @@ func (h *HTTPServer) ui(w http.ResponseWriter, r *http.Request) {
 <style>body{font-family:system-ui;margin:2rem;max-width:52rem}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:.5rem;text-align:left}
 button{padding:.3rem .8rem;margin-right:.4rem}.msg{background:#eef;padding:.6rem;border-radius:4px}</style>
-<h1>AgentGate — pending approvals</h1>`)
+<h1>AgentGate — pending approvals</h1>
+<p><a href="/dashboard">→ open the read-only dashboard</a> (audit log, ownership graph, live)</p>`)
 	if msg := r.URL.Query().Get("msg"); msg != "" {
 		fmt.Fprintf(w, `<p class="msg">%s</p>`, html.EscapeString(msg))
 	}
